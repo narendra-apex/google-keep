@@ -1,0 +1,1213 @@
+openapi: 3.1.0
+info:
+  title: Unified Commerce OS - Commerce API
+  description: |
+    Commerce API covering Inventory, Order Management System (OMS), and Finance modules 
+    for the Unified Commerce OS platform.
+    
+    ## Multi-Tenancy
+    All endpoints enforce tenant isolation through:
+    - **Tenant ID Header** (`x-tenant-id`): Passed in request headers
+    - **Row-Level Security**: PostgreSQL RLS policies enforce data isolation at database layer
+    - **JWT Token**: Contains tenant_id claim for authentication context
+    
+    ## Authentication
+    All endpoints require Bearer token authentication via JWT. Include in Authorization header:
+    ```
+    Authorization: Bearer <jwt_token>
+    ```
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: api-support@example.com
+servers:
+  - url: https://api.example.com/v1
+    description: Production
+  - url: https://staging-api.example.com/v1
+    description: Staging
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    TenantId:
+      name: x-tenant-id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Tenant identifier for multi-tenant isolation
+
+    PaginationLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    PaginationOffset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+        - message
+        - request_id
+      properties:
+        error:
+          type: string
+          enum: [BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, INTERNAL_ERROR]
+        message:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+
+    PaginatedResponse:
+      type: object
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+        pagination:
+          type: object
+          required:
+            - limit
+            - offset
+            - total
+            - has_more
+          properties:
+            limit:
+              type: integer
+            offset:
+              type: integer
+            total:
+              type: integer
+            has_more:
+              type: boolean
+
+    AuditMetadata:
+      type: object
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+          format: uuid
+        updated_by:
+          type: string
+          format: uuid
+
+    # ============= INVENTORY =============
+
+    InventoryStock:
+      type: object
+      required:
+        - product_id
+        - location_id
+        - available_quantity
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        location_id:
+          type: string
+          format: uuid
+          description: Warehouse/location identifier
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related events: `inventory.stock_allocated`, `inventory.stock_released`, `inventory.adjusted`
+        available_quantity:
+          type: integer
+          description: Quantity available for sale
+        allocated_quantity:
+          type: integer
+          description: Quantity reserved for pending orders
+        reserved_quantity:
+          type: integer
+          description: Quantity on hold
+        total_quantity:
+          type: integer
+          description: Total physical quantity
+        reorder_point:
+          type: integer
+        last_count_date:
+          type: string
+          format: date-time
+        <<: *AuditMetadata
+      example:
+        product_id: product-uuid-001
+        location_id: location-uuid-001
+        tenant_id: org-uuid-001
+        available_quantity: 950
+        allocated_quantity: 50
+        reserved_quantity: 0
+        total_quantity: 1000
+        reorder_point: 100
+        last_count_date: "2024-01-15T10:30:00Z"
+
+    InventoryAdjustment:
+      type: object
+      required:
+        - adjustment_id
+        - product_id
+        - location_id
+        - adjustment_type
+        - quantity_delta
+      properties:
+        adjustment_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related event: `inventory.adjusted`
+        product_id:
+          type: string
+          format: uuid
+        location_id:
+          type: string
+          format: uuid
+        adjustment_type:
+          type: string
+          enum: [physical_count, damage, shrinkage, sample, correction]
+        old_quantity:
+          type: integer
+        new_quantity:
+          type: integer
+        quantity_delta:
+          type: integer
+          description: Change in quantity (can be negative)
+        reason:
+          type: string
+        reference_id:
+          type: string
+          format: uuid
+          description: Related PO or order ID
+        adjustment_cost_cents:
+          type: integer
+        notes:
+          type: string
+        <<: *AuditMetadata
+      example:
+        adjustment_id: adj-uuid-001
+        tenant_id: org-uuid-001
+        product_id: product-uuid-001
+        location_id: location-uuid-001
+        adjustment_type: physical_count
+        old_quantity: 1000
+        new_quantity: 950
+        quantity_delta: -50
+        reason: Physical inventory count variance
+        adjustment_cost_cents: 5000
+        created_at: "2024-01-15T10:30:00Z"
+
+    # ============= OMS (ORDER MANAGEMENT) =============
+
+    Order:
+      type: object
+      required:
+        - order_id
+        - order_number
+        - customer_id
+        - status
+      properties:
+        order_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related events: `order.created`, `order.confirmed`, `order.payment_authorized`, `order.payment_captured`, `order.cancelled`
+        brand_id:
+          type: string
+          format: uuid
+        order_number:
+          type: string
+          description: Human-readable order number
+        customer_id:
+          type: string
+          format: uuid
+        order_date:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, confirmed, payment_authorized, payment_captured, fulfilling, shipped, delivered, cancelled, returned]
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        shipping_address:
+          type: object
+          properties:
+            street:
+              type: string
+            city:
+              type: string
+            state:
+              type: string
+            postal_code:
+              type: string
+            country:
+              type: string
+        billing_address:
+          type: object
+        subtotal_cents:
+          type: integer
+        tax_cents:
+          type: integer
+        shipping_cost_cents:
+          type: integer
+        discount_cents:
+          type: integer
+        total_cents:
+          type: integer
+        currency:
+          type: string
+          pattern: ^[A-Z]{3}$
+        payment_method:
+          type: string
+          enum: [credit_card, debit_card, paypal, bank_transfer, cash]
+        payment_status:
+          type: string
+          enum: [pending, authorized, captured, declined, refunded]
+        shipping_method:
+          type: string
+          enum: [standard, express, overnight, pickup]
+        tracking_number:
+          type: string
+        notes:
+          type: string
+        <<: *AuditMetadata
+      example:
+        order_id: order-uuid-001
+        tenant_id: org-uuid-001
+        brand_id: brand-uuid-001
+        order_number: ORD-2024-00001
+        customer_id: customer-uuid-001
+        order_date: "2024-01-15T10:30:00Z"
+        status: confirmed
+        items:
+          - order_item_id: order-item-uuid-001
+            product_id: product-uuid-001
+            sku: WIDGET-100-RED
+            quantity: 2
+            unit_price_cents: 8500
+            line_total_cents: 17000
+        total_cents: 17745
+        currency: USD
+        payment_method: credit_card
+        payment_status: captured
+        created_at: "2024-01-15T10:30:00Z"
+
+    OrderItem:
+      type: object
+      required:
+        - order_item_id
+        - product_id
+        - quantity
+        - unit_price_cents
+      properties:
+        order_item_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        variant_id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price_cents:
+          type: integer
+          minimum: 0
+        line_total_cents:
+          type: integer
+        status:
+          type: string
+          enum: [pending, allocated, picked, packed, shipped, delivered, returned]
+
+    CreateOrderRequest:
+      type: object
+      required:
+        - customer_id
+        - items
+        - shipping_address
+      properties:
+        customer_id:
+          type: string
+          format: uuid
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required:
+              - product_id
+              - quantity
+            properties:
+              product_id:
+                type: string
+                format: uuid
+              variant_id:
+                type: string
+                format: uuid
+              quantity:
+                type: integer
+                minimum: 1
+        shipping_address:
+          type: object
+          required:
+            - street
+            - city
+            - postal_code
+          properties:
+            street:
+              type: string
+            city:
+              type: string
+            state:
+              type: string
+            postal_code:
+              type: string
+            country:
+              type: string
+        billing_address:
+          type: object
+        shipping_method:
+          type: string
+          enum: [standard, express, overnight, pickup]
+          default: standard
+        payment_method:
+          type: string
+          enum: [credit_card, debit_card, paypal, bank_transfer]
+        notes:
+          type: string
+
+    Shipment:
+      type: object
+      required:
+        - shipment_id
+        - order_id
+      properties:
+        shipment_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related events: `shipment.created`, `shipment.shipped`, `shipment.delivered`
+        order_id:
+          type: string
+          format: uuid
+        warehouse_id:
+          type: string
+          format: uuid
+        carrier:
+          type: string
+          enum: [fedex, ups, usps, dhl, generic]
+        service_level:
+          type: string
+          enum: [standard, express, overnight]
+        tracking_number:
+          type: string
+        estimated_delivery_date:
+          type: string
+          format: date
+        actual_delivery_date:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [created, picked, packed, labeled, shipped, in_transit, delivered, failed, returned]
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              order_item_id:
+                type: string
+                format: uuid
+              sku:
+                type: string
+              quantity_shipped:
+                type: integer
+        shipping_cost_cents:
+          type: integer
+        <<: *AuditMetadata
+      example:
+        shipment_id: shipment-uuid-001
+        tenant_id: org-uuid-001
+        order_id: order-uuid-001
+        warehouse_id: warehouse-uuid-001
+        carrier: fedex
+        service_level: standard
+        tracking_number: 1Z999AA10123456784
+        estimated_delivery_date: "2024-01-18"
+        status: shipped
+        items:
+          - order_item_id: order-item-uuid-001
+            sku: WIDGET-100-RED
+            quantity_shipped: 2
+        created_at: "2024-01-15T13:30:00Z"
+
+    # ============= FINANCE =============
+
+    Invoice:
+      type: object
+      required:
+        - invoice_id
+        - invoice_number
+        - amount_cents
+      properties:
+        invoice_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related events: `invoice.created`, `invoice.sent`, `payment.received`
+        brand_id:
+          type: string
+          format: uuid
+        invoice_number:
+          type: string
+        invoice_date:
+          type: string
+          format: date
+        due_date:
+          type: string
+          format: date
+        reference_type:
+          type: string
+          enum: [order, po, credit_memo]
+        reference_id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        supplier_id:
+          type: string
+          format: uuid
+        line_items:
+          type: array
+          items:
+            type: object
+            properties:
+              description:
+                type: string
+              quantity:
+                type: number
+              unit_price_cents:
+                type: integer
+              line_total_cents:
+                type: integer
+        subtotal_cents:
+          type: integer
+        tax_cents:
+          type: integer
+        total_cents:
+          type: integer
+        currency:
+          type: string
+          pattern: ^[A-Z]{3}$
+        status:
+          type: string
+          enum: [draft, sent, viewed, partially_paid, paid, overdue, cancelled]
+        payment_terms:
+          type: string
+          enum: [net_30, net_60, immediate, custom]
+        notes:
+          type: string
+        <<: *AuditMetadata
+      example:
+        invoice_id: invoice-uuid-001
+        tenant_id: org-uuid-001
+        invoice_number: INV-2024-00001
+        invoice_date: "2024-01-15"
+        due_date: "2024-02-15"
+        reference_type: order
+        reference_id: order-uuid-001
+        customer_id: customer-uuid-001
+        total_cents: 17745
+        currency: USD
+        status: sent
+        payment_terms: net_30
+        created_at: "2024-01-15T10:30:00Z"
+
+    CreateInvoiceRequest:
+      type: object
+      required:
+        - invoice_number
+        - invoice_date
+        - total_cents
+        - currency
+      properties:
+        invoice_number:
+          type: string
+        invoice_date:
+          type: string
+          format: date
+        due_date:
+          type: string
+          format: date
+        reference_type:
+          type: string
+          enum: [order, po, credit_memo]
+        reference_id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        line_items:
+          type: array
+          items:
+            type: object
+        subtotal_cents:
+          type: integer
+        tax_cents:
+          type: integer
+        total_cents:
+          type: integer
+        currency:
+          type: string
+          pattern: ^[A-Z]{3}$
+        payment_terms:
+          type: string
+          enum: [net_30, net_60, immediate, custom]
+        notes:
+          type: string
+
+    Payment:
+      type: object
+      required:
+        - payment_id
+        - amount_cents
+      properties:
+        payment_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related events: `payment.received`, `payment.failed`, `payment.refunded`
+        reference_type:
+          type: string
+          enum: [order, invoice, credit_memo]
+        reference_id:
+          type: string
+          format: uuid
+        amount_cents:
+          type: integer
+        currency:
+          type: string
+          pattern: ^[A-Z]{3}$
+        payment_method:
+          type: string
+          enum: [credit_card, bank_transfer, check, cash, other]
+        status:
+          type: string
+          enum: [pending, authorized, captured, failed, refunded]
+        transaction_id:
+          type: string
+        payment_date:
+          type: string
+          format: date-time
+        notes:
+          type: string
+        <<: *AuditMetadata
+      example:
+        payment_id: payment-uuid-001
+        tenant_id: org-uuid-001
+        reference_type: invoice
+        reference_id: invoice-uuid-001
+        amount_cents: 17745
+        currency: USD
+        payment_method: credit_card
+        status: captured
+        transaction_id: txn-12345
+        payment_date: "2024-01-15T11:00:00Z"
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ============= INVENTORY ENDPOINTS =============
+
+  /inventory/stock:
+    get:
+      tags:
+        - Inventory
+      summary: Get current stock levels
+      description: |
+        Get inventory stock for product at location. Requires `read:inventory` scope.
+        RLS ensures only tenant stock data is returned.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: product_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: location_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Optional - if not provided, return for all locations
+      responses:
+        '200':
+          description: Stock levels
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/InventoryStock'
+
+  /inventory/adjustments:
+    post:
+      tags:
+        - Inventory
+      summary: Create inventory adjustment
+      description: |
+        Adjust inventory for product at location (physical count, damage, etc.).
+        Requires `write:inventory` scope.
+        Triggers `inventory.adjusted` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - product_id
+                - location_id
+                - adjustment_type
+                - new_quantity
+              properties:
+                product_id:
+                  type: string
+                  format: uuid
+                location_id:
+                  type: string
+                  format: uuid
+                adjustment_type:
+                  type: string
+                  enum: [physical_count, damage, shrinkage, sample, correction]
+                new_quantity:
+                  type: integer
+                  minimum: 0
+                reason:
+                  type: string
+                reference_id:
+                  type: string
+                  format: uuid
+                notes:
+                  type: string
+      responses:
+        '201':
+          description: Adjustment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryAdjustment'
+
+    get:
+      tags:
+        - Inventory
+      summary: List inventory adjustments (paginated)
+      description: |
+        List all inventory adjustments in tenant. Requires `read:inventory` scope.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+        - name: product_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by product
+        - name: location_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by location
+      responses:
+        '200':
+          description: Adjustment list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/InventoryAdjustment'
+
+  # ============= ORDER MANAGEMENT ENDPOINTS =============
+
+  /orders:
+    post:
+      tags:
+        - Order Management System
+      summary: Create order
+      description: |
+        Create new customer order. Requires `write:orders` scope.
+        Triggers `order.created` event, which cascades to:
+        - `inventory.stock_allocated` (Inventory Service)
+        - Fraud detection plugins
+        - Fulfillment service
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+
+    get:
+      tags:
+        - Order Management System
+      summary: List orders (paginated)
+      description: |
+        List all orders in tenant. Requires `read:orders` scope.
+        RLS ensures only tenant orders are returned.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, confirmed, payment_authorized, payment_captured, fulfilling, shipped, delivered, cancelled]
+          description: Filter by order status
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by customer
+        - name: from_date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter orders from date
+        - name: to_date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter orders to date
+      responses:
+        '200':
+          description: Order list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Order'
+
+  /orders/{order_id}:
+    get:
+      tags:
+        - Order Management System
+      summary: Get order details
+      description: |
+        Retrieve single order. Requires `read:orders` scope.
+        RLS ensures only tenant orders are accessible.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Order details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+
+  /orders/{order_id}/confirm:
+    post:
+      tags:
+        - Order Management System
+      summary: Confirm order
+      description: |
+        Confirm order (after payment verification). Requires `write:orders` scope.
+        Triggers `order.confirmed` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Order confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+
+  /orders/{order_id}/cancel:
+    post:
+      tags:
+        - Order Management System
+      summary: Cancel order
+      description: |
+        Cancel order. Requires `write:orders` scope.
+        Triggers `order.cancelled` event, which cascades to:
+        - `inventory.stock_released` (Inventory Service)
+        - Refund processing (Finance Service)
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - cancellation_reason
+              properties:
+                cancellation_reason:
+                  type: string
+                  enum: [customer_request, fraud_suspected, payment_failed, inventory_shortage]
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Order cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+
+  /shipments:
+    post:
+      tags:
+        - Order Management System
+      summary: Create shipment
+      description: |
+        Create shipment for order. Requires `write:orders` scope.
+        Triggers `shipment.created` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - order_id
+                - carrier
+              properties:
+                order_id:
+                  type: string
+                  format: uuid
+                warehouse_id:
+                  type: string
+                  format: uuid
+                carrier:
+                  type: string
+                  enum: [fedex, ups, usps, dhl, generic]
+                service_level:
+                  type: string
+                  enum: [standard, express, overnight]
+                tracking_number:
+                  type: string
+      responses:
+        '201':
+          description: Shipment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shipment'
+
+    get:
+      tags:
+        - Order Management System
+      summary: List shipments (paginated)
+      description: |
+        List all shipments in tenant. Requires `read:orders` scope.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+        - name: order_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [created, picked, packed, labeled, shipped, delivered]
+      responses:
+        '200':
+          description: Shipment list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Shipment'
+
+  # ============= FINANCE ENDPOINTS =============
+
+  /invoices:
+    post:
+      tags:
+        - Finance
+      summary: Create invoice
+      description: |
+        Create invoice for order or PO. Requires `write:finance` scope.
+        Triggers `invoice.created` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvoiceRequest'
+      responses:
+        '201':
+          description: Invoice created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+
+    get:
+      tags:
+        - Finance
+      summary: List invoices (paginated)
+      description: |
+        List all invoices in tenant. Requires `read:finance` scope.
+        RLS ensures only tenant invoices are returned.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, sent, viewed, partially_paid, paid, overdue, cancelled]
+        - name: reference_type
+          in: query
+          schema:
+            type: string
+            enum: [order, po, credit_memo]
+      responses:
+        '200':
+          description: Invoice list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Invoice'
+
+  /invoices/{invoice_id}:
+    get:
+      tags:
+        - Finance
+      summary: Get invoice
+      description: |
+        Retrieve single invoice. Requires `read:finance` scope.
+        RLS ensures only tenant invoices are accessible.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Invoice details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+
+  /payments:
+    post:
+      tags:
+        - Finance
+      summary: Record payment
+      description: |
+        Record payment for invoice or order. Requires `write:finance` scope.
+        Triggers `payment.received` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - amount_cents
+                - currency
+                - reference_type
+                - reference_id
+              properties:
+                amount_cents:
+                  type: integer
+                  minimum: 0
+                currency:
+                  type: string
+                  pattern: ^[A-Z]{3}$
+                reference_type:
+                  type: string
+                  enum: [order, invoice, credit_memo]
+                reference_id:
+                  type: string
+                  format: uuid
+                payment_method:
+                  type: string
+                  enum: [credit_card, bank_transfer, check, cash, other]
+                transaction_id:
+                  type: string
+                notes:
+                  type: string
+      responses:
+        '201':
+          description: Payment recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+
+    get:
+      tags:
+        - Finance
+      summary: List payments (paginated)
+      description: |
+        List all payments in tenant. Requires `read:finance` scope.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, authorized, captured, failed, refunded]
+        - name: reference_type
+          in: query
+          schema:
+            type: string
+            enum: [order, invoice, credit_memo]
+      responses:
+        '200':
+          description: Payment list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Payment'
