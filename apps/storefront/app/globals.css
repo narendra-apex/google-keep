@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* CSS variables for theming - set by BrandProvider */
+:root {
+  --color-primary: #0066CC;
+  --color-secondary: #FF9900;
+  --color-accent: #00AA44;
+  --color-background: #FFFFFF;
+  --color-text: #333333;
+  --color-success: #00AA44;
+  --color-warning: #FFAA00;
+  --color-error: #CC0000;
+
+  --font-heading: "Inter", system-ui, -apple-system, sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, sans-serif;
+  --font-size-heading: 32px;
+  --font-size-body: 14px;
+  --line-height: 1.5;
+
+  --spacing-unit: 8px;
+  --border-radius: 4px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  color: var(--color-text);
+  background-color: var(--color-background);
+  font-family: var(--font-body);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+}
+
+h1 {
+  font-size: var(--font-size-heading);
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  opacity: 0.8;
+}
+
+button {
+  font-family: var(--font-body);
+}
+
+.container {
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 calc(var(--spacing-unit) * 2);
+}

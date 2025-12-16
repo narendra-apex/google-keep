@@ -9,7 +9,8 @@
     "migrate": "bun scripts/migrate.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "admin:dev": "cd apps/admin && bun run dev"
+    "admin:dev": "cd apps/admin && bun run dev",
+    "storefront:dev": "cd apps/storefront && bun run dev"
   },
   "dependencies": {
     "pg": "^8.12.0"
