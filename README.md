@@ -30,6 +30,40 @@ This repository contains the architecture blueprint and foundational design docu
 - **Orchestration**: Kubernetes
 - **Observability**: Prometheus + Grafana + Jaeger
 
+## Admin Portal (New)
+
+The Admin Portal is a Next.js application located in `apps/admin`. It provides a multi-tenant dashboard for managing brands, users, and workflows.
+
+### Running the Admin App
+
+To start the development server for the admin app:
+
+```bash
+bun install
+bun run admin:dev
+```
+
+This will start the Next.js app on `http://localhost:3000`.
+
+### Layout Hierarchy
+
+The application follows the Next.js App Router structure:
+
+- `app/layout.tsx`: Root layout with global styles.
+- `app/(auth)/`: Authentication routes (Sign In, Forgot Password) with simple layout.
+- `app/(dashboard)/`: Protected dashboard routes.
+  - `layout.tsx`: Wraps content with `Sidebar`, `Header` (TopNav), and `Providers`.
+  - `page.tsx`: Dashboard landing page with KPI cards.
+
+### Tenant Context & RLS
+
+The Admin Portal implements tenant context propagation as described in the architecture docs:
+
+1. **Extraction**: `middleware.ts` extracts `tenant_id` and `brand_id` from cookies or hostname.
+2. **Injection**: Middleware injects `x-tenant-id` and `x-brand-id` headers into requests.
+3. **Data Fetching**: A custom `fetcher` in `lib/fetcher.ts` (used by React Query) reads these values from cookies and sends them as headers to API endpoints.
+4. **Tenant Switcher**: A global tenant switcher in the header allows users to switch brands, persisting the selection to cookies.
+
 ## Architecture Highlights
 
 ### Multi-Tenancy by Design
