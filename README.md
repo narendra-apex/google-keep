@@ -125,6 +125,32 @@ This repository contains the architecture blueprint and foundational design docu
 
 ## Getting Started
 
+### Database (Phase 1)
+
+#### Run migrations
+
+The migration runner executes `src/db/schema.sql` against `DATABASE_URL`.
+
+```bash
+export DATABASE_URL="postgres://postgres:postgres@localhost:5432/ucom"
+
+# Apply schema.sql
+bun scripts/migrate.ts
+
+# Optionally apply seed.sql
+bun scripts/migrate.ts --seed
+```
+
+#### Run integration tests (RLS)
+
+The Vitest integration tests use Docker Compose to spin up PostgreSQL.
+
+```bash
+docker compose -f docker-compose.test.yml up -d
+bun run test
+docker compose -f docker-compose.test.yml down -v
+```
+
 ### Reading the Documentation
 
 Start with the [Architecture Blueprint](./docs/architecture/unified-commerce-os-architecture.md) for:
