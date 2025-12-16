@@ -2,10 +2,14 @@
   "name": "unified-commerce-os",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
     "migrate": "bun scripts/migrate.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "admin:dev": "cd apps/admin && bun run dev"
   },
   "dependencies": {
     "pg": "^8.12.0"
