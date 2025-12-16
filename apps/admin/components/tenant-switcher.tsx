@@ -5,25 +5,6 @@ import { Check, ChevronsUpDown, Store } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
-
-// Simplified versions of Popover and Command if they don't exist
-// But I should probably create them or stub them.
-// Since I haven't created Popover/Command, I'll use a simpler approach using standard HTML select or a custom div.
-
-// Let's use a custom implementation for now to avoid creating 5 more files.
 
 export function TenantSwitcher({
   className,
