@@ -1,0 +1,996 @@
+openapi: 3.1.0
+info:
+  title: Unified Commerce OS - E-Commerce API
+  description: |
+    E-Commerce API covering storefront, customer management, and channel operations 
+    for the Unified Commerce OS platform.
+    
+    ## Multi-Tenancy
+    All endpoints enforce tenant isolation through:
+    - **Brand Context**: Passed via `x-brand-id` header or cookie for storefront
+    - **Tenant ID Header** (`x-tenant-id`): For admin/internal endpoints
+    - **Row-Level Security**: PostgreSQL RLS policies enforce data isolation at database layer
+    
+    ## Authentication
+    - **Storefront**: Optional (anonymous browsing), Session-based for logged-in customers
+    - **Admin**: Bearer token authentication via JWT
+    
+    ## Channels
+    Multiple sales channels supported:
+    - Direct storefront (company-owned)
+    - Marketplace integrations (Shopify, etc.)
+    - Mobile app
+    - Social commerce
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: api-support@example.com
+servers:
+  - url: https://storefront-api.example.com/v1
+    description: Storefront (B2C)
+  - url: https://api.example.com/v1
+    description: Admin API (B2B/Internal)
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token for admin endpoints
+    SessionAuth:
+      type: apiKey
+      in: cookie
+      name: session_id
+      description: Session cookie for customer authentication
+
+  parameters:
+    TenantId:
+      name: x-tenant-id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: Tenant identifier (required for admin endpoints)
+
+    BrandId:
+      name: x-brand-id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: Brand identifier for storefront
+
+    PaginationLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    PaginationOffset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum: [BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, INTERNAL_ERROR]
+        message:
+          type: string
+
+    AuditMetadata:
+      type: object
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ============= E-COMMERCE CHANNEL =============
+
+    Channel:
+      type: object
+      required:
+        - channel_id
+        - name
+        - type
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: Multi-tenant identifier. Read-only.
+        brand_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: Channel name (e.g., "Main Storefront", "Amazon")
+        type:
+          type: string
+          enum: [storefront, marketplace, mobile, social, wholesale]
+        status:
+          type: string
+          enum: [active, inactive, archived]
+        settings:
+          type: object
+          description: Channel-specific configuration
+          properties:
+            url:
+              type: string
+              format: uri
+              description: For storefront channels
+            marketplace_id:
+              type: string
+              description: For marketplace integrations
+            sync_inventory:
+              type: boolean
+            sync_orders:
+              type: boolean
+        metadata:
+          type: object
+        <<: *AuditMetadata
+      example:
+        channel_id: channel-uuid-001
+        tenant_id: org-uuid-001
+        brand_id: brand-uuid-001
+        name: Main Storefront
+        type: storefront
+        status: active
+        settings:
+          url: https://store.example.com
+          sync_inventory: true
+          sync_orders: true
+
+    # ============= CUSTOMER =============
+
+    Customer:
+      type: object
+      required:
+        - customer_id
+        - email
+      properties:
+        customer_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: Multi-tenant identifier. Read-only.
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+        last_name:
+          type: string
+        phone:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, suspended]
+        customer_type:
+          type: string
+          enum: [individual, business]
+        address:
+          type: object
+          properties:
+            street:
+              type: string
+            city:
+              type: string
+            state:
+              type: string
+            postal_code:
+              type: string
+            country:
+              type: string
+        total_orders:
+          type: integer
+        total_spent_cents:
+          type: integer
+        loyalty_points:
+          type: integer
+        preferences:
+          type: object
+          properties:
+            marketing_emails:
+              type: boolean
+            language:
+              type: string
+              pattern: ^[a-z]{2}(-[A-Z]{2})?$
+            timezone:
+              type: string
+        <<: *AuditMetadata
+      example:
+        customer_id: customer-uuid-001
+        tenant_id: org-uuid-001
+        email: john.doe@example.com
+        first_name: John
+        last_name: Doe
+        status: active
+        customer_type: individual
+        total_orders: 5
+        total_spent_cents: 125000
+        loyalty_points: 500
+
+    CreateCustomerRequest:
+      type: object
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+        last_name:
+          type: string
+        phone:
+          type: string
+        address:
+          type: object
+        preferences:
+          type: object
+
+    # ============= SHOPPING CART =============
+
+    Cart:
+      type: object
+      required:
+        - cart_id
+        - customer_id
+      properties:
+        cart_id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        brand_id:
+          type: string
+          format: uuid
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CartItem'
+        subtotal_cents:
+          type: integer
+        tax_cents:
+          type: integer
+        shipping_cost_cents:
+          type: integer
+        discount_cents:
+          type: integer
+        total_cents:
+          type: integer
+        currency:
+          type: string
+          pattern: ^[A-Z]{3}$
+        applied_promo_codes:
+          type: array
+          items:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+        <<: *AuditMetadata
+      example:
+        cart_id: cart-uuid-001
+        customer_id: customer-uuid-001
+        tenant_id: org-uuid-001
+        brand_id: brand-uuid-001
+        items:
+          - product_id: product-uuid-001
+            variant_id: variant-uuid-001
+            quantity: 2
+            unit_price_cents: 8500
+        subtotal_cents: 17000
+        tax_cents: 1445
+        total_cents: 18445
+        currency: USD
+
+    CartItem:
+      type: object
+      required:
+        - product_id
+        - quantity
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        variant_id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price_cents:
+          type: integer
+        line_total_cents:
+          type: integer
+        image_url:
+          type: string
+          format: uri
+
+    AddToCartRequest:
+      type: object
+      required:
+        - product_id
+        - quantity
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        variant_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+
+    # ============= REVIEW & RATINGS =============
+
+    Review:
+      type: object
+      required:
+        - review_id
+        - product_id
+        - customer_id
+        - rating
+      properties:
+        review_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        order_id:
+          type: string
+          format: uuid
+          description: Order ID if review is from verified purchase
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        title:
+          type: string
+        comment:
+          type: string
+        verified_purchase:
+          type: boolean
+        helpful_count:
+          type: integer
+          default: 0
+        status:
+          type: string
+          enum: [pending, approved, rejected, spam]
+        <<: *AuditMetadata
+      example:
+        review_id: review-uuid-001
+        tenant_id: org-uuid-001
+        product_id: product-uuid-001
+        customer_id: customer-uuid-001
+        order_id: order-uuid-001
+        rating: 5
+        title: Great product!
+        comment: Excellent quality and fast shipping
+        verified_purchase: true
+        status: approved
+
+    CreateReviewRequest:
+      type: object
+      required:
+        - product_id
+        - rating
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        order_id:
+          type: string
+          format: uuid
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        title:
+          type: string
+          maxLength: 255
+        comment:
+          type: string
+          maxLength: 5000
+
+    # ============= PROMOTION & DISCOUNT =============
+
+    PromoCode:
+      type: object
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          description: Unique promo code (e.g., SAVE20)
+        tenant_id:
+          type: string
+          format: uuid
+        brand_id:
+          type: string
+          format: uuid
+        discount_type:
+          type: string
+          enum: [percentage, fixed_amount, buy_x_get_y, free_shipping]
+        discount_value:
+          type: number
+          description: Discount amount or percentage
+        valid_from:
+          type: string
+          format: date-time
+        valid_to:
+          type: string
+          format: date-time
+        max_uses:
+          type: integer
+        usage_count:
+          type: integer
+          default: 0
+        status:
+          type: string
+          enum: [active, inactive, archived]
+        conditions:
+          type: object
+          properties:
+            min_purchase_cents:
+              type: integer
+            applicable_product_ids:
+              type: array
+              items:
+                type: string
+            applicable_categories:
+              type: array
+              items:
+                type: string
+        <<: *AuditMetadata
+
+security:
+  - BearerAuth: []
+  - SessionAuth: []
+
+paths:
+  # ============= CHANNEL ENDPOINTS =============
+
+  /channels:
+    post:
+      tags:
+        - E-Commerce Channels
+      summary: Create sales channel
+      description: |
+        Create new sales channel (storefront, marketplace, mobile). Requires admin access.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - type
+              properties:
+                name:
+                  type: string
+                type:
+                  type: string
+                  enum: [storefront, marketplace, mobile, social, wholesale]
+                settings:
+                  type: object
+      responses:
+        '201':
+          description: Channel created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Channel'
+
+    get:
+      tags:
+        - E-Commerce Channels
+      summary: List channels
+      description: |
+        List all active channels for tenant/brand.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+      responses:
+        '200':
+          description: Channel list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Channel'
+
+  # ============= CUSTOMER ENDPOINTS (PUBLIC) =============
+
+  /customers:
+    post:
+      tags:
+        - Customer Management
+      summary: Register customer (sign up)
+      description: |
+        Create new customer account. Public endpoint.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCustomerRequest'
+      responses:
+        '201':
+          description: Customer created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+
+  /customers/me:
+    get:
+      tags:
+        - Customer Management
+      summary: Get current customer profile
+      description: |
+        Retrieve authenticated customer profile. Requires session authentication.
+      responses:
+        '200':
+          description: Customer profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    patch:
+      tags:
+        - Customer Management
+      summary: Update customer profile
+      description: |
+        Update current customer details. Requires session authentication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+                phone:
+                  type: string
+                address:
+                  type: object
+                preferences:
+                  type: object
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+
+  # ============= SHOPPING CART ENDPOINTS =============
+
+  /cart:
+    get:
+      tags:
+        - Shopping Cart
+      summary: Get current cart
+      description: |
+        Retrieve current shopping cart for authenticated customer.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+      responses:
+        '200':
+          description: Cart contents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+
+  /cart/items:
+    post:
+      tags:
+        - Shopping Cart
+      summary: Add item to cart
+      description: |
+        Add product to shopping cart. Creates cart if not exists.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddToCartRequest'
+      responses:
+        '200':
+          description: Item added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+
+  /cart/items/{product_id}:
+    patch:
+      tags:
+        - Shopping Cart
+      summary: Update item quantity
+      description: |
+        Update quantity of item in cart.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - quantity
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: Item updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+
+    delete:
+      tags:
+        - Shopping Cart
+      summary: Remove item from cart
+      description: |
+        Remove product from cart.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Item removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+
+  /cart/apply-promo:
+    post:
+      tags:
+        - Shopping Cart
+      summary: Apply promo code
+      description: |
+        Apply promotional code to cart.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: Promo applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '400':
+          description: Invalid promo code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /cart/checkout:
+    post:
+      tags:
+        - Shopping Cart
+      summary: Convert cart to order
+      description: |
+        Submit cart for checkout and create order.
+        This endpoint is public and will create a guest order if not authenticated.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - shipping_address
+                - payment_method
+              properties:
+                shipping_address:
+                  type: object
+                  required:
+                    - street
+                    - city
+                    - postal_code
+                  properties:
+                    street:
+                      type: string
+                    city:
+                      type: string
+                    state:
+                      type: string
+                    postal_code:
+                      type: string
+                    country:
+                      type: string
+                billing_address:
+                  type: object
+                payment_method:
+                  type: string
+                  enum: [credit_card, debit_card, paypal, bank_transfer]
+                shipping_method:
+                  type: string
+                  enum: [standard, express, overnight]
+                  default: standard
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order_id:
+                    type: string
+                    format: uuid
+                  order_number:
+                    type: string
+                  total_cents:
+                    type: integer
+                  payment_url:
+                    type: string
+                    format: uri
+                    description: Redirect customer to this URL for payment
+
+  # ============= REVIEW ENDPOINTS =============
+
+  /products/{product_id}/reviews:
+    post:
+      tags:
+        - Reviews & Ratings
+      summary: Submit product review
+      description: |
+        Submit review for product. Requires session authentication.
+        Generates notification to product owner.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReviewRequest'
+      responses:
+        '201':
+          description: Review submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Review'
+
+    get:
+      tags:
+        - Reviews & Ratings
+      summary: List product reviews
+      description: |
+        List approved reviews for product (public endpoint).
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [newest, oldest, highest_rating, lowest_rating, most_helpful]
+            default: newest
+      responses:
+        '200':
+          description: Review list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Review'
+                  average_rating:
+                    type: number
+                  total_reviews:
+                    type: integer
+
+  /reviews/{review_id}/helpful:
+    post:
+      tags:
+        - Reviews & Ratings
+      summary: Mark review as helpful
+      description: |
+        Mark review as helpful. Public endpoint (tracks by IP/session).
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+        - name: review_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Marked as helpful
+
+  # ============= PROMOTION ENDPOINTS =============
+
+  /promo-codes/{code}:
+    get:
+      tags:
+        - Promotions
+      summary: Validate promo code
+      description: |
+        Check if promo code is valid and get discount details.
+        Public endpoint used by storefront.
+      parameters:
+        - $ref: '#/components/parameters/BrandId'
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Promo valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  discount_type:
+                    type: string
+                  discount_value:
+                    type: number
+        '404':
+          description: Promo not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/promo-codes:
+    post:
+      tags:
+        - Promotions (Admin)
+      summary: Create promo code
+      description: |
+        Create new promotional code. Requires admin access.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+                - discount_type
+                - discount_value
+              properties:
+                code:
+                  type: string
+                discount_type:
+                  type: string
+                  enum: [percentage, fixed_amount, buy_x_get_y, free_shipping]
+                discount_value:
+                  type: number
+                valid_from:
+                  type: string
+                  format: date-time
+                valid_to:
+                  type: string
+                  format: date-time
+                max_uses:
+                  type: integer
+                conditions:
+                  type: object
+      responses:
+        '201':
+          description: Promo created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCode'

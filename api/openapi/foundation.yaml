@@ -1,0 +1,1329 @@
+openapi: 3.1.0
+info:
+  title: Unified Commerce OS - Foundation API
+  description: |
+    Foundation API covering Identity/RBAC, Product Information Management (PIM), 
+    and Procurement modules for the Unified Commerce OS platform.
+    
+    ## Multi-Tenancy
+    All endpoints enforce tenant isolation through:
+    - **Tenant ID Header** (`x-tenant-id`): Passed in request headers
+    - **Row-Level Security**: PostgreSQL RLS policies enforce data isolation at database layer
+    - **JWT Token**: Contains tenant_id claim for authentication context
+    
+    ## Authentication
+    All endpoints require Bearer token authentication via JWT. Include in Authorization header:
+    ```
+    Authorization: Bearer <jwt_token>
+    ```
+    
+    Token claims include: `sub` (user_id), `tenant_id`, `scopes` (RBAC permissions)
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: api-support@example.com
+servers:
+  - url: https://api.example.com/v1
+    description: Production
+  - url: https://staging-api.example.com/v1
+    description: Staging
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token containing tenant_id and RBAC scopes
+
+  parameters:
+    TenantId:
+      name: x-tenant-id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Tenant identifier for multi-tenant isolation
+
+    PaginationLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Number of records to return
+
+    PaginationOffset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      description: Number of records to skip
+
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+        - message
+        - request_id
+        - timestamp
+      properties:
+        error:
+          type: string
+          enum: [BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, INTERNAL_ERROR, VALIDATION_ERROR]
+        message:
+          type: string
+          description: Human-readable error message
+        request_id:
+          type: string
+          format: uuid
+          description: Correlation ID for request tracing
+        timestamp:
+          type: string
+          format: date-time
+        details:
+          type: object
+          description: Additional error context
+        validation_errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+    PaginatedResponse:
+      type: object
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+        pagination:
+          type: object
+          required:
+            - limit
+            - offset
+            - total
+            - has_more
+          properties:
+            limit:
+              type: integer
+            offset:
+              type: integer
+            total:
+              type: integer
+            has_more:
+              type: boolean
+
+    AuditMetadata:
+      type: object
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+          format: uuid
+        updated_by:
+          type: string
+          format: uuid
+
+    # ============= IDENTITY & RBAC =============
+
+    User:
+      type: object
+      required:
+        - user_id
+        - email
+        - full_name
+        - status
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only, set from JWT context.
+            Related event: `user.created`
+        email:
+          type: string
+          format: email
+        full_name:
+          type: string
+        status:
+          type: string
+          enum: [active, pending_confirmation, suspended, archived]
+        roles:
+          type: array
+          items:
+            type: string
+          description: Assigned roles for RBAC
+        metadata:
+          type: object
+          description: Custom user attributes
+        <<: *AuditMetadata
+
+    CreateUserRequest:
+      type: object
+      required:
+        - email
+        - full_name
+        - roles
+      properties:
+        email:
+          type: string
+          format: email
+        full_name:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: |
+            Role IDs to assign. Valid scopes:
+            - `role:order_manager` - Create/manage orders
+            - `role:inventory_admin` - Manage inventory
+            - `role:procurement_lead` - Create/approve POs
+            - `role:finance_admin` - Manage invoices/payments
+            - `role:product_manager` - Manage products/catalog
+            - `role:tenant_admin` - Tenant administration
+
+    Role:
+      type: object
+      required:
+        - role_id
+        - name
+        - scopes
+      properties:
+        role_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related event: tenant-level role management
+        name:
+          type: string
+        description:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+          description: |
+            Granular permission scopes:
+            - `read:products` - View products
+            - `write:products` - Create/edit products
+            - `read:orders` - View orders
+            - `write:orders` - Create/modify orders
+            - `read:inventory` - View stock levels
+            - `write:inventory` - Adjust inventory
+            - `read:procurement` - View POs
+            - `write:procurement` - Create/edit POs
+            - `read:finance` - View financial data
+            - `write:finance` - Create invoices/payments
+            - `admin:users` - Manage users/roles
+            - `admin:webhooks` - Manage webhooks
+            - `admin:plugins` - Manage plugins
+        <<: *AuditMetadata
+
+    AuthToken:
+      type: object
+      required:
+        - access_token
+        - token_type
+        - expires_in
+      properties:
+        access_token:
+          type: string
+          description: JWT token containing claims (sub, tenant_id, scopes, exp)
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Token expiration in seconds (default 3600)
+        refresh_token:
+          type: string
+          description: Optional refresh token for renewing access
+
+    # ============= PIM (PRODUCT INFO MANAGEMENT) =============
+
+    Product:
+      type: object
+      required:
+        - product_id
+        - sku
+        - name
+        - status
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related events: `product.created`, `product.updated`, `product.deleted`
+        brand_id:
+          type: string
+          format: uuid
+          description: Brand owning this product
+        sku:
+          type: string
+          description: Stock Keeping Unit (unique per tenant)
+        name:
+          type: string
+        description:
+          type: string
+        category_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [draft, active, inactive, discontinued]
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVariant'
+        pricing:
+          type: object
+          properties:
+            base_price_cents:
+              type: integer
+            currency:
+              type: string
+              pattern: ^[A-Z]{3}$
+              example: USD
+            discount_percent:
+              type: number
+              minimum: 0
+              maximum: 100
+        metadata:
+          type: object
+          properties:
+            weight_kg:
+              type: number
+            dimensions:
+              type: string
+            supplier_sku:
+              type: string
+        <<: *AuditMetadata
+      example:
+        product_id: 550e8400-e29b-41d4-a716-446655440000
+        tenant_id: org-uuid-001
+        brand_id: brand-uuid-001
+        sku: WIDGET-100-BLU
+        name: Widget 100 - Blue
+        description: Premium quality widget in blue finish
+        category_id: category-uuid-001
+        status: active
+        metadata:
+          weight_kg: 1.5
+          dimensions: 10x10x5 cm
+        created_at: "2024-01-15T10:30:00Z"
+        updated_at: "2024-01-15T10:30:00Z"
+
+    CreateProductRequest:
+      type: object
+      required:
+        - sku
+        - name
+        - category_id
+      properties:
+        sku:
+          type: string
+          description: Unique SKU per tenant
+        name:
+          type: string
+        description:
+          type: string
+        category_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [draft, active]
+          default: draft
+        pricing:
+          type: object
+          properties:
+            base_price_cents:
+              type: integer
+              minimum: 0
+            currency:
+              type: string
+              pattern: ^[A-Z]{3}$
+        metadata:
+          type: object
+
+    ProductVariant:
+      type: object
+      required:
+        - variant_id
+        - sku
+        - attributes
+      properties:
+        variant_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+          description: Variant-level SKU
+        attributes:
+          type: object
+          properties:
+            color:
+              type: string
+            size:
+              type: string
+            other:
+              type: object
+        images:
+          type: array
+          items:
+            type: string
+            format: uri
+        <<: *AuditMetadata
+      example:
+        variant_id: variant-uuid-001
+        product_id: product-uuid-001
+        sku: WIDGET-100-RED
+        attributes:
+          color: red
+          size: large
+        images:
+          - https://cdn.example.com/widget-100-red-1.jpg
+
+    Category:
+      type: object
+      required:
+        - category_id
+        - name
+      properties:
+        category_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related event: `category.created`
+        name:
+          type: string
+        description:
+          type: string
+        parent_category_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Parent category for hierarchies
+        display_order:
+          type: integer
+          minimum: 0
+        <<: *AuditMetadata
+      example:
+        category_id: category-uuid-001
+        tenant_id: org-uuid-001
+        name: Electronics
+        description: Electronic products and gadgets
+        parent_category_id: null
+        display_order: 1
+        created_at: "2024-01-15T10:30:00Z"
+
+    # ============= PROCUREMENT =============
+
+    ProcurementOrder:
+      type: object
+      required:
+        - po_id
+        - po_number
+        - supplier_id
+        - status
+      properties:
+        po_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: |
+            Multi-tenant identifier. Read-only.
+            Related events: `po.created`, `po.acknowledged`, `po.partially_received`, `po.completed`, `po.cancelled`
+        brand_id:
+          type: string
+          format: uuid
+        po_number:
+          type: string
+          description: Human-readable PO number (unique per tenant)
+        supplier_id:
+          type: string
+          format: uuid
+        supplier_name:
+          type: string
+        order_date:
+          type: string
+          format: date-time
+        delivery_date:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [draft, submitted, acknowledged, received, invoiced, closed, cancelled]
+        total_amount_cents:
+          type: integer
+          description: Total amount in cents
+        currency:
+          type: string
+          pattern: ^[A-Z]{3}$
+        payment_terms:
+          type: string
+          enum: [net_30, net_60, cod, prepaid]
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcurementOrderItem'
+        notes:
+          type: string
+        <<: *AuditMetadata
+      example:
+        po_id: po-uuid-001
+        tenant_id: org-uuid-001
+        brand_id: brand-uuid-001
+        po_number: PO-2024-00123
+        supplier_id: supplier-uuid-001
+        supplier_name: Acme Widgets Inc
+        order_date: "2024-01-15T10:30:00Z"
+        delivery_date: "2024-02-15"
+        status: submitted
+        total_amount_cents: 50000
+        currency: USD
+        payment_terms: net_30
+        items:
+          - po_item_id: po-item-uuid-001
+            product_id: product-uuid-001
+            sku: WIDGET-100
+            quantity: 500
+            unit_price_cents: 100
+        created_at: "2024-01-15T10:30:00Z"
+
+    ProcurementOrderItem:
+      type: object
+      required:
+        - po_item_id
+        - product_id
+        - quantity
+        - unit_price_cents
+      properties:
+        po_item_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price_cents:
+          type: integer
+          minimum: 0
+        received_quantity:
+          type: integer
+          default: 0
+
+    CreateProcurementOrderRequest:
+      type: object
+      required:
+        - po_number
+        - supplier_id
+        - delivery_date
+        - items
+      properties:
+        po_number:
+          type: string
+        supplier_id:
+          type: string
+          format: uuid
+        delivery_date:
+          type: string
+          format: date
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required:
+              - product_id
+              - quantity
+              - unit_price_cents
+            properties:
+              product_id:
+                type: string
+                format: uuid
+              quantity:
+                type: integer
+                minimum: 1
+              unit_price_cents:
+                type: integer
+                minimum: 0
+        payment_terms:
+          type: string
+          enum: [net_30, net_60, cod, prepaid]
+          default: net_30
+        notes:
+          type: string
+
+    Supplier:
+      type: object
+      required:
+        - supplier_id
+        - name
+      properties:
+        supplier_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: Multi-tenant identifier. Read-only.
+        name:
+          type: string
+        contact_email:
+          type: string
+          format: email
+        rating:
+          type: number
+          minimum: 0
+          maximum: 5
+          description: Quality rating (0-5 stars)
+        metadata:
+          type: object
+          properties:
+            country:
+              type: string
+            lead_time_days:
+              type: integer
+        <<: *AuditMetadata
+      example:
+        supplier_id: supplier-uuid-001
+        tenant_id: org-uuid-001
+        name: Acme Widgets Inc
+        contact_email: orders@acmewidgets.com
+        rating: 4.8
+        metadata:
+          country: USA
+          lead_time_days: 14
+        created_at: "2024-01-15T10:30:00Z"
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ============= IDENTITY & RBAC ENDPOINTS =============
+
+  /auth/token:
+    post:
+      tags:
+        - Identity & RBAC
+      summary: Authenticate user and get JWT token
+      description: |
+        Exchanges credentials for JWT token containing tenant_id and RBAC scopes.
+        Token can be used to authenticate subsequent API calls.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthToken'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/me:
+    get:
+      tags:
+        - Identity & RBAC
+      summary: Get current user profile
+      description: Returns authenticated user details extracted from JWT token
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users:
+    post:
+      tags:
+        - Identity & RBAC
+      summary: Create new user (admin only)
+      description: |
+        Create new user in tenant. Requires `admin:users` scope.
+        Triggers `user.created` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Identity & RBAC
+      summary: List users (paginated)
+      description: |
+        List all users in tenant. Requires `admin:users` scope.
+        RLS ensures only tenant users are returned.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/User'
+
+  /roles:
+    get:
+      tags:
+        - Identity & RBAC
+      summary: List available roles
+      description: |
+        List all roles in tenant with their permissions.
+        Requires `admin:users` scope.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+      responses:
+        '200':
+          description: Role list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Role'
+
+  # ============= PIM (PRODUCTS) ENDPOINTS =============
+
+  /products:
+    post:
+      tags:
+        - Product Information Management
+      summary: Create product
+      description: |
+        Create new product in catalog. Requires `write:products` scope.
+        Triggers `product.created` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+      responses:
+        '201':
+          description: Product created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Product Information Management
+      summary: List products (paginated)
+      description: |
+        List all products in tenant. Requires `read:products` scope.
+        RLS ensures only tenant products are returned.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, active, inactive, discontinued]
+          description: Filter by status
+        - name: category_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by category
+      responses:
+        '200':
+          description: Product list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Product'
+
+  /products/{product_id}:
+    get:
+      tags:
+        - Product Information Management
+      summary: Get product by ID
+      description: |
+        Retrieve single product. Requires `read:products` scope.
+        RLS ensures only tenant products are accessible.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Product details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '404':
+          description: Product not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    patch:
+      tags:
+        - Product Information Management
+      summary: Update product
+      description: |
+        Update product details. Requires `write:products` scope.
+        Triggers `product.updated` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+      responses:
+        '200':
+          description: Product updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+
+    delete:
+      tags:
+        - Product Information Management
+      summary: Delete product
+      description: |
+        Soft-delete product. Requires `write:products` scope.
+        Triggers `product.deleted` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Product deleted
+
+  /products/{product_id}/variants:
+    post:
+      tags:
+        - Product Information Management
+      summary: Create product variant
+      description: |
+        Create variant for product. Requires `write:products` scope.
+        Triggers `product_variant.created` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sku
+                - attributes
+              properties:
+                sku:
+                  type: string
+                attributes:
+                  type: object
+                images:
+                  type: array
+                  items:
+                    type: string
+                    format: uri
+      responses:
+        '201':
+          description: Variant created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductVariant'
+
+  /categories:
+    post:
+      tags:
+        - Product Information Management
+      summary: Create category
+      description: |
+        Create new product category. Requires `write:products` scope.
+        Triggers `category.created` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                parent_category_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Category created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+
+    get:
+      tags:
+        - Product Information Management
+      summary: List categories (paginated)
+      description: |
+        List all categories in tenant. Requires `read:products` scope.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+      responses:
+        '200':
+          description: Category list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Category'
+
+  # ============= PROCUREMENT ENDPOINTS =============
+
+  /procurement/orders:
+    post:
+      tags:
+        - Procurement
+      summary: Create procurement order
+      description: |
+        Create new purchase order. Requires `write:procurement` scope.
+        Triggers `po.created` event.
+        
+        Tenant isolation: PO is automatically assigned to authenticated tenant via RLS.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProcurementOrderRequest'
+      responses:
+        '201':
+          description: PO created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrder'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Procurement
+      summary: List procurement orders (paginated)
+      description: |
+        List all POs in tenant. Requires `read:procurement` scope.
+        RLS ensures only tenant POs are returned.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, submitted, acknowledged, received, invoiced, closed, cancelled]
+          description: Filter by PO status
+        - name: supplier_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by supplier
+      responses:
+        '200':
+          description: PO list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ProcurementOrder'
+
+  /procurement/orders/{po_id}:
+    get:
+      tags:
+        - Procurement
+      summary: Get procurement order
+      description: |
+        Retrieve single PO. Requires `read:procurement` scope.
+        RLS ensures only tenant POs are accessible.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: po_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: PO details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrder'
+
+  /procurement/orders/{po_id}/acknowledge:
+    post:
+      tags:
+        - Procurement
+      summary: Acknowledge procurement order
+      description: |
+        Mark PO as acknowledged by supplier. Requires `write:procurement` scope.
+        Triggers `po.acknowledged` event.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: po_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - supplier_reference
+              properties:
+                supplier_reference:
+                  type: string
+                expected_delivery_date:
+                  type: string
+                  format: date
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: PO acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrder'
+
+  /procurement/suppliers:
+    post:
+      tags:
+        - Procurement
+      summary: Create supplier
+      description: |
+        Create new supplier record. Requires `write:procurement` scope.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - contact_email
+              properties:
+                name:
+                  type: string
+                contact_email:
+                  type: string
+                  format: email
+                metadata:
+                  type: object
+      responses:
+        '201':
+          description: Supplier created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Supplier'
+
+    get:
+      tags:
+        - Procurement
+      summary: List suppliers (paginated)
+      description: |
+        List all suppliers for tenant. Requires `read:procurement` scope.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+      responses:
+        '200':
+          description: Supplier list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Supplier'
+
+  /webhooks:
+    post:
+      tags:
+        - Webhooks
+      summary: Register webhook
+      description: |
+        Register webhook endpoint for receiving events. Requires `admin:webhooks` scope.
+        Triggers `webhook.registered` event.
+        
+        Webhook will receive POST requests with event payload when subscribed events occur.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - endpoint_url
+                - event_types
+              properties:
+                endpoint_url:
+                  type: string
+                  format: uri
+                  description: URL to POST events to
+                event_types:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                  description: |
+                    Events to subscribe to:
+                    - `product.created`, `product.updated`, `product.deleted`
+                    - `po.created`, `po.acknowledged`, `po.completed`
+                    - `inventory.adjusted`, `inventory.low_stock_alert`
+                    - `order.created`, `order.confirmed`, `order.cancelled`
+                    - `user.created`
+                retry_policy:
+                  type: object
+                  properties:
+                    max_retries:
+                      type: integer
+                      default: 5
+                    backoff_multiplier:
+                      type: number
+                      default: 2
+      responses:
+        '201':
+          description: Webhook registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhook_id:
+                    type: string
+                    format: uuid
+                  endpoint_url:
+                    type: string
+                  event_types:
+                    type: array
+                    items:
+                      type: string
+
+    get:
+      tags:
+        - Webhooks
+      summary: List webhooks
+      description: |
+        List all registered webhooks for tenant. Requires `admin:webhooks` scope.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
